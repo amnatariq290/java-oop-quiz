@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-dark: #07080c;
+    --card-surface: #0e111a;
+  }
+
+  body {
+    background-color: #07080c;
+    color: #f1f5f9;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* Custom subtle scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #07080c;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #1e293b;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #334155;
+  }
+}
+
+@layer utilities {
+  .glass-panel {
+    background: rgba(14, 17, 26, 0.75);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .glass-card {
+    background: rgba(18, 22, 34, 0.6);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .metallic-gradient {
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.02) 100%);
+  }
+
+  .text-glow {
+    text-shadow: 0 0 24px rgba(56, 189, 248, 0.4);
+  }
+
+  .text-glow-violet {
+    text-shadow: 0 0 24px rgba(139, 92, 246, 0.4);
+  }
+
+  .border-glow {
+    box-shadow: 0 0 15px rgba(56, 189, 248, 0.2);
+  }
+}
+
+/* Syntax highlighted code block */
+pre code {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Animation utilities */
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(1000%); }
+}
+
+.scanline-effect {
+  position: relative;
+  overflow: hidden;
+}
+.scanline-effect::after {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.4), transparent);
+  animation: scanline 8s linear infinite;
+  pointer-events: none;
+}
