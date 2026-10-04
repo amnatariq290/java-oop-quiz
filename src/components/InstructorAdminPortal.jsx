@@ -40,16 +40,14 @@ import { labAudio } from '../utils/audio';
 export default function InstructorAdminPortal({ onExitToStudentPortal }) {
   const [isAdminAuth, setIsAdminAuth] = useState(false);
   const [authStep, setAuthStep] = useState('request'); // 'request' | 'verify'
-  const [instructorName, setInstructorName] = useState('Dr. Naveed Khan');
-  const [universityEmail, setUniversityEmail] = useState('instructor@university.edu.pk');
+  const [universityEmail, setUniversityEmail] = useState('');
   const [temporaryPassword, setTemporaryPassword] = useState('');
   const [authError, setAuthError] = useState(null);
   const [authSuccessMsg, setAuthSuccessMsg] = useState(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
   const [authInstructorInfo, setAuthInstructorInfo] = useState(null);
-  const [facultyRoster, setFacultyRoster] = useState([]);
-  const [universityDomain, setUniversityDomain] = useState('university.edu.pk');
+  const [universityDomain, setUniversityDomain] = useState('uettaxila.edu.pk');
 
   // Portal State
   const [activeTab, setActiveTab] = useState('scoreboard'); // 'scoreboard' | 'attendance' | 'security' | 'questions' | 'settings'
@@ -111,13 +109,12 @@ export default function InstructorAdminPortal({ onExitToStudentPortal }) {
     return () => clearInterval(timer);
   }, [resendCooldown]);
 
-  // Initial load: verify session and fetch faculty roster
+  // Initial load: verify session and fetch domain info
   useEffect(() => {
     fetch('/api/admin/faculty-info')
       .then(res => res.json())
       .then(data => {
         if (data.domain) setUniversityDomain(data.domain);
-        if (data.authorizedInstructors) setFacultyRoster(data.authorizedInstructors);
       })
       .catch(console.error);
 
@@ -170,6 +167,10 @@ export default function InstructorAdminPortal({ onExitToStudentPortal }) {
   // Step 1: Request Temporary Password
   const handleRequestPassword = async (e) => {
     e?.preventDefault();
+    if (!universityEmail.trim()) {
+      setAuthError('Please enter your university email address.');
+      return;
+    }
     setAuthLoading(true);
     setAuthError(null);
     setAuthSuccessMsg(null);
@@ -180,14 +181,13 @@ export default function InstructorAdminPortal({ onExitToStudentPortal }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: instructorName.trim(),
           email: universityEmail.trim().toLowerCase()
         })
       });
 
       const data = await res.json();
       if (!res.ok) {
-        setAuthError(data.message || data.error || 'Failed to request temporary password.');
+        setAuthError(data.message || data.error || 'Access denied. This email is not authorized.');
         labAudio.playWarning();
         setAuthLoading(false);
         return;
@@ -548,21 +548,6 @@ export default function InstructorAdminPortal({ onExitToStudentPortal }) {
             <form onSubmit={handleRequestPassword} className="space-y-4">
               <div className="space-y-1.5">
                 <label className="text-xs font-mono uppercase text-slate-400 flex items-center justify-between">
-                  <span>Instructor Full Name</span>
-                  <span className="text-[10px] text-slate-500">REQUIRED</span>
-                </label>
-                <input
-                  type="text"
-                  value={instructorName}
-                  onChange={(e) => setInstructorName(e.target.value)}
-                  placeholder="e.g. Dr. Naveed Khan"
-                  required
-                  className="w-full px-4 py-3 rounded-xl bg-surface-950 border border-white/10 text-white font-mono text-xs focus:outline-none focus:border-electric-cyan transition-all"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-mono uppercase text-slate-400 flex items-center justify-between">
                   <span>University Email Address</span>
                   <span className="text-[10px] text-slate-500">@{universityDomain}</span>
                 </label>
@@ -571,55 +556,13 @@ export default function InstructorAdminPortal({ onExitToStudentPortal }) {
                     type="email"
                     value={universityEmail}
                     onChange={(e) => setUniversityEmail(e.target.value)}
-                    placeholder={`e.g. instructor@${universityDomain}`}
+                    placeholder={`name@${universityDomain}`}
                     required
                     className="w-full px-4 py-3 rounded-xl bg-surface-950 border border-white/10 text-white font-mono text-xs focus:outline-none focus:border-electric-cyan transition-all"
                   />
                   <Mail className="w-4 h-4 text-slate-500 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                 </div>
               </div>
-
-              {/* Pre-authorized Faculty Roster Quick-Fill Helper */}
-              {facultyRoster.length > 0 && (
-                <div className="p-3.5 rounded-xl bg-surface-950/60 border border-white/5 space-y-2">
-                  <div className="text-[10px] font-mono text-slate-400 uppercase tracking-wider flex items-center justify-between">
-                    <span>Authorized Faculty Directory:</span>
-                    <span className="text-[9px] text-slate-500">Click to Select</span>
-                  </div>
-                  <div className="grid grid-cols-1 gap-1.5">
-                    {facultyRoster.map((fac) => (
-                      <button
-                        key={fac.email}
-                        type="button"
-                        onClick={() => {
-                          setInstructorName(fac.name);
-                          setUniversityEmail(fac.email);
-                          setAuthError(null);
-                        }}
-                        className={`text-left p-2 rounded-lg border text-[11px] font-mono transition-all flex items-center justify-between ${
-                          universityEmail.toLowerCase() === fac.email.toLowerCase()
-                            ? 'bg-electric-cyan/15 border-electric-cyan/50 text-white'
-                            : 'bg-white/5 border-white/5 text-slate-300 hover:bg-white/10'
-                        }`}
-                      >
-                        <div className="truncate pr-2">
-                          <span className="font-bold text-white">{fac.name}</span>{' '}
-                          <span className="text-slate-400">({fac.email})</span>
-                        </div>
-                        <span
-                          className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase flex-shrink-0 ${
-                            fac.isActive
-                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                              : 'bg-red-500/20 text-red-400 border border-red-500/30'
-                          }`}
-                        >
-                          {fac.isActive ? 'Active' : 'Inactive'}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
 
               <button
                 type="submit"
@@ -804,7 +747,7 @@ export default function InstructorAdminPortal({ onExitToStudentPortal }) {
             </div>
             <div className="text-xs text-slate-400 font-light flex items-center gap-2 flex-wrap">
               <span>{authInstructorInfo?.role || 'Lead Examiner'}:</span>
-              <strong className="text-slate-200">{authInstructorInfo?.name || 'Dr. Arthur Vance'}</strong>
+              <strong className="text-slate-200">{authInstructorInfo?.name || 'Dr. Naveed Khan'}</strong>
               {authInstructorInfo?.email && (
                 <span className="px-2 py-0.5 rounded bg-surface-900 border border-white/10 text-[11px] font-mono text-electric-cyan">
                   {authInstructorInfo.email}
@@ -1440,15 +1383,15 @@ export default function InstructorAdminPortal({ onExitToStudentPortal }) {
                 </label>
                 <input
                   type="text"
-                  value={settingsForm.universityEmailDomain || 'university.edu.pk'}
+                  value={settingsForm.universityEmailDomain || 'uettaxila.edu.pk'}
                   onChange={(e) =>
                     setSettingsForm({ ...settingsForm, universityEmailDomain: e.target.value.toLowerCase().trim() })
                   }
-                  placeholder="university.edu.pk"
+                  placeholder="uettaxila.edu.pk"
                   className="w-full px-4 py-2.5 rounded-xl bg-surface-950 border border-white/10 text-white font-mono text-xs focus:outline-none focus:border-electric-cyan"
                 />
                 <span className="text-[10px] text-slate-500 font-mono">
-                  Instructors must sign in using @{settingsForm.universityEmailDomain || 'university.edu.pk'} accounts
+                  Instructors must sign in using @{settingsForm.universityEmailDomain || 'uettaxila.edu.pk'} accounts
                 </span>
               </div>
 

@@ -1,9 +1,14 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { sendInstructorLoginEmail } from './email.js';
 
 const DB_FILE = path.resolve(process.cwd(), 'data/quiz-db.json');
 const TMP_FILE = path.resolve(process.cwd(), 'data/quiz-db.tmp.json');
+
+export function getAuthorizedInstructorEmail() {
+  return (process.env.INSTRUCTOR_EMAIL || "naveed.khan@uettaxila.edu.pk").trim().toLowerCase();
+}
 
 // Standard Java OOP Topic Library as defined in requirement #15
 export const DEFAULT_TOPICS = [
@@ -886,7 +891,7 @@ export const INITIAL_DATA = {
     rightClickDisabled: true,
     autoSubmit: true,
     rollPrefix: "25-CP", // Instructor configurable prefix
-    universityEmailDomain: "university.edu.pk", // Instructor email domain
+    universityEmailDomain: "uettaxila.edu.pk", // Instructor email domain
     minTopics: 2,
     totalQuestions: 10,
     showResultImmediately: true,
@@ -898,26 +903,10 @@ export const INITIAL_DATA = {
     {
       id: "inst-001",
       name: "Dr. Naveed Khan",
-      email: "instructor@university.edu.pk",
+      email: "naveed.khan@uettaxila.edu.pk",
       role: "Lead Java Examiner",
       department: "Department of Computer Science & Software Engineering",
       isActive: true
-    },
-    {
-      id: "inst-002",
-      name: "Dr. Arthur Vance",
-      email: "arthur.vance@university.edu.pk",
-      role: "Senior OOP Faculty",
-      department: "Department of Computer Science & Software Engineering",
-      isActive: true
-    },
-    {
-      id: "inst-003",
-      name: "Prof. Robert Sterling",
-      email: "robert.sterling@university.edu.pk",
-      role: "Visiting Faculty",
-      department: "Department of Computer Science & Software Engineering",
-      isActive: false
     }
   ],
   instructorTemporaryPasswords: [],
@@ -968,14 +957,14 @@ class QuizDatabase {
           data.settings.quizActive = true;
           needsUpdate = true;
         }
-        if (!data.settings.universityEmailDomain) {
-          data.settings.universityEmailDomain = "university.edu.pk";
+        if (data.settings.universityEmailDomain !== "uettaxila.edu.pk") {
+          data.settings.universityEmailDomain = "uettaxila.edu.pk";
           needsUpdate = true;
         }
-        if (!data.instructors || data.instructors.length === 0) {
-          data.instructors = DEFAULT_INSTRUCTORS;
-          needsUpdate = true;
-        }
+        // Force single authorized instructor in DB
+        data.instructors = DEFAULT_INSTRUCTORS;
+        needsUpdate = true;
+
         if (!data.instructorTemporaryPasswords) {
           data.instructorTemporaryPasswords = [];
           needsUpdate = true;
@@ -1739,8 +1728,9 @@ class QuizDatabase {
 
   // --- Faculty Whitelist & University Domain ---
   getUniversityDomain() {
-    const data = this.readAll();
-    return (data.settings && data.settings.universityEmailDomain) || "university.edu.pk";
+    const email = getAuthorizedInstructorEmail();
+    const parts = email.split('@');
+    return parts.length > 1 ? parts[1] : "uettaxila.edu.pk";
   }
 
   validateUniversityDomain(email) {
@@ -1748,25 +1738,6 @@ class QuizDatabase {
     const clean = email.trim().toLowerCase();
     const domain = this.getUniversityDomain().toLowerCase();
     return clean.endsWith(`@${domain}`) || clean.endsWith(`.${domain}`);
-  }
-
-  getAuthorizedInstructors() {
-    const data = this.readAll();
-    return (data.instructors || DEFAULT_INSTRUCTORS).map(i => ({
-      id: i.id,
-      name: i.name,
-      email: i.email,
-      role: i.role,
-      department: i.department,
-      isActive: !!i.isActive
-    }));
-  }
-
-  findInstructorByEmail(email) {
-    if (!email) return null;
-    const clean = email.trim().toLowerCase();
-    const data = this.readAll();
-    return (data.instructors || DEFAULT_INSTRUCTORS).find(i => i.email.toLowerCase() === clean) || null;
   }
 
   // --- Audit Event Logger ---
@@ -1790,72 +1761,43 @@ class QuizDatabase {
   }
 
   // --- Step 1: Request Temporary Password ---
-  createTemporaryPassword(name, email, clientIp = '127.0.0.1') {
+  async createTemporaryPassword(nameOrEmail, emailParam, clientIp = '127.0.0.1') {
     const data = this.readAll();
     if (!data.authRateLimits) data.authRateLimits = { failedAttempts: {}, requestCooldown: {} };
     if (!data.instructorTemporaryPasswords) data.instructorTemporaryPasswords = [];
 
-    if (!name || typeof name !== 'string' || !name.trim()) {
-      throw new Error("INSTRUCTOR NAME REQUIRED: Please provide your registered full faculty name.");
-    }
-    if (!email || typeof email !== 'string' || !email.trim()) {
-      throw new Error("UNIVERSITY EMAIL REQUIRED: Please provide your institutional faculty email.");
+    const rawEmail = (emailParam || nameOrEmail || '').toString().trim();
+    if (!rawEmail) {
+      throw new Error("University email is required.");
     }
 
-    const cleanName = name.trim();
-    const cleanEmail = email.trim().toLowerCase();
-    const expectedDomain = this.getUniversityDomain();
+    const cleanEmail = rawEmail.toLowerCase();
+    const authorizedEmail = getAuthorizedInstructorEmail();
 
-    // 1. Validate institutional domain
-    if (!this.validateUniversityDomain(cleanEmail)) {
-      throw new Error(`INVALID EMAIL DOMAIN: Instructor login is strictly restricted to institutional '@${expectedDomain}' accounts.`);
-    }
-
-    // 2. Verify instructor in authorized whitelist
-    const instructor = (data.instructors || DEFAULT_INSTRUCTORS).find(
-      i => i.email.toLowerCase() === cleanEmail
-    );
-    if (!instructor) {
+    // 1. Validate Single Authorized Instructor (generic error without leaking allowed email)
+    if (cleanEmail !== authorizedEmail) {
       this.logAuthEvent('UNAUTHORIZED_ACCESS_ATTEMPT', {
         email: cleanEmail,
-        instructorName: cleanName,
-        details: `Access denied: ${cleanEmail} is not on the authorized faculty whitelist.`,
+        instructorName: "Unauthorized Candidate",
+        details: `Access denied: ${cleanEmail} is not authorized.`,
         severity: 'WARNING'
       });
-      throw new Error("UNAUTHORIZED INSTRUCTOR: This university email is not in the authorized faculty whitelist. Self-registration is strictly disabled.");
+      this.writeAll(data);
+      throw new Error("Access denied. This email is not authorized.");
     }
 
-    // 3. Verify instructor account status
-    if (!instructor.isActive) {
-      this.logAuthEvent('INACTIVE_INSTRUCTOR_ATTEMPT', {
-        email: cleanEmail,
-        instructorName: cleanName,
-        details: `Access denied: Account ${cleanEmail} is deactivated.`,
-        severity: 'WARNING'
-      });
-      throw new Error("ACCOUNT INACTIVE: Your faculty account is currently marked inactive. Please contact the department examination board.");
-    }
-
-    // 4. Verify submitted name matches authorized instructor record
-    const normSubmitted = cleanName.toLowerCase().replace(/^(dr\.|prof\.|mr\.|ms\.|mrs\.)\s+/i, '').replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
-    const normRecorded = instructor.name.toLowerCase().replace(/^(dr\.|prof\.|mr\.|ms\.|mrs\.)\s+/i, '').replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
-    const matchesName = normSubmitted === normRecorded ||
-      normSubmitted.includes(normRecorded) ||
-      normRecorded.includes(normSubmitted) ||
-      cleanName.toLowerCase() === instructor.name.toLowerCase();
-
-    if (!matchesName) {
-      this.logAuthEvent('INSTRUCTOR_NAME_MISMATCH', {
-        email: cleanEmail,
-        instructorName: cleanName,
-        details: `Name mismatch: Submitted "${cleanName}" does not match recorded "${instructor.name}".`,
-        severity: 'WARNING'
-      });
-      throw new Error(`NAME MISMATCH: The submitted name "${cleanName}" does not match the faculty record registered for ${cleanEmail}.`);
-    }
-
-    // 5. Rate limiting: 60s resend cooldown + max 3 per 5 minutes
+    // 2. Check if account is locked
+    const failedRecord = data.authRateLimits.failedAttempts?.[cleanEmail];
     const now = Date.now();
+    if (failedRecord && failedRecord.lockedUntil) {
+      const lockUntilMs = new Date(failedRecord.lockedUntil).getTime();
+      if (now < lockUntilMs) {
+        const remainingMin = Math.ceil((lockUntilMs - now) / 60000);
+        throw new Error(`Account locked due to failed attempts. Try again in ${remainingMin} minute(s).`);
+      }
+    }
+
+    // 3. Rate limiting: 60s resend cooldown + max 3 per 5 minutes
     const cooldownRecords = data.authRateLimits.requestCooldown || {};
     const emailHistory = (cooldownRecords[cleanEmail] || []).filter(ts => now - ts < 5 * 60 * 1000);
 
@@ -1864,38 +1806,28 @@ class QuizDatabase {
       const elapsedMs = now - lastTs;
       if (elapsedMs < 60 * 1000) {
         const remainingSec = Math.ceil((60000 - elapsedMs) / 1000);
-        throw new Error(`RATE LIMIT: Please wait ${remainingSec} second(s) before requesting another temporary password.`);
+        throw new Error(`Please wait ${remainingSec} second(s) before requesting another temporary password.`);
       }
     }
 
     if (emailHistory.length >= 3) {
-      throw new Error("RATE LIMIT EXCEEDED: Maximum 3 temporary password requests per 5 minutes reached. Please check your existing email or wait.");
-    }
-
-    // Check if account is locked
-    const failedRecord = data.authRateLimits.failedAttempts?.[cleanEmail];
-    if (failedRecord && failedRecord.lockedUntil) {
-      const lockUntilMs = new Date(failedRecord.lockedUntil).getTime();
-      if (now < lockUntilMs) {
-        const remainingMin = Math.ceil((lockUntilMs - now) / 60000);
-        throw new Error(`ACCOUNT LOCKED: Account is temporarily locked due to failed attempts. Try again in ${remainingMin} minute(s).`);
-      }
+      throw new Error("Maximum 3 temporary password requests per 5 minutes reached. Please check your existing email or wait.");
     }
 
     emailHistory.push(now);
     cooldownRecords[cleanEmail] = emailHistory;
     data.authRateLimits.requestCooldown = cooldownRecords;
 
-    // 6. Generate cryptographically secure random temporary password (format XXXX-XXXX)
+    // 5. Generate cryptographically secure random temporary password (format XXXX-XXXX)
     const charset = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
     const randBytes = crypto.randomBytes(8);
     let part1 = '';
     let part2 = '';
     for (let i = 0; i < 4; i++) part1 += charset[randBytes[i] % charset.length];
-    for (let i = 0; i < 4; i++) part2 += charset[randBytes[i + 4] % charset.length];
+    for (let i = 4; i < 8; i++) part2 += charset[randBytes[i] % charset.length];
     const temporaryPassword = `${part1}-${part2}`;
 
-    // 7. Store salted SHA-256 hash only (never plaintext)
+    // 6. Store salted SHA-256 hash only (never plaintext)
     const salt = crypto.randomBytes(16).toString('hex');
     const passwordHash = crypto.createHash('sha256').update(salt + ':' + temporaryPassword).digest('hex');
 
@@ -1910,8 +1842,8 @@ class QuizDatabase {
     const expiresAt = new Date(now + 10 * 60 * 1000).toISOString(); // 10 minutes
     data.instructorTemporaryPasswords.push({
       id: `tp-${crypto.randomBytes(6).toString('hex')}`,
-      instructorId: instructor.id,
-      instructorName: instructor.name,
+      instructorId: "inst-001",
+      instructorName: "Dr. Naveed Khan",
       email: cleanEmail,
       salt,
       passwordHash,
@@ -1920,52 +1852,27 @@ class QuizDatabase {
       used: false
     });
 
-    // 8. Log audit event
+    // 7. Log audit event
     this.logAuthEvent('INSTRUCTOR_PASSWORD_REQUESTED', {
       email: cleanEmail,
-      instructorName: instructor.name,
-      details: `Temporary password generated for ${instructor.name} (${cleanEmail}). Dispatched to institutional inbox.`,
+      instructorName: "Dr. Naveed Khan",
+      details: `Temporary password generated for ${cleanEmail}. Dispatched to institutional inbox.`,
       severity: 'INFO'
     });
 
     this.writeAll(data);
 
-    // 9. Dispatch to Institutional Email (recorded to data/email-outbox.log)
-    try {
-      const emailLogPath = path.resolve(process.cwd(), 'data/email-outbox.log');
-      const logDir = path.dirname(emailLogPath);
-      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
-
-      const emailContent = `
-================================================================================
-INSTITUTIONAL EMAIL DISPATCH: Java OOP Examination Portal
-Timestamp : ${new Date(now).toISOString()}
-To        : ${instructor.name} <${cleanEmail}>
-Department: ${instructor.department}
-Subject   : Java OOP Examination Portal — Instructor Login
---------------------------------------------------------------------------------
-Dear Instructor,
-
-Your temporary login password is:
-
-${temporaryPassword}
-
-This password expires in 10 minutes and can only be used once.
-
-If you did not request this login, please ignore this email.
-================================================================================
-`;
-      fs.appendFileSync(emailLogPath, emailContent, 'utf-8');
-      console.log(emailContent);
-    } catch (logErr) {
-      console.error('Failed writing to email outbox log:', logErr);
-    }
+    // 8. Dispatch to Institutional Email via nodemailer / outbox fallback
+    await sendInstructorLoginEmail({
+      toEmail: cleanEmail,
+      instructorName: "Dr. Naveed Khan",
+      temporaryPassword
+    });
 
     // NEVER leak password to client
     return {
       success: true,
       email: cleanEmail,
-      instructorName: instructor.name,
       message: `Temporary password generated and sent to ${cleanEmail}. Valid for 10 minutes.`,
       cooldownSeconds: 60,
       expiresInSeconds: 600
@@ -1980,22 +1887,17 @@ If you did not request this login, please ignore this email.
     if (!data.instructorSessions) data.instructorSessions = [];
 
     if (!email || !candidatePassword) {
-      throw new Error("MISSING CREDENTIALS: Both university email and temporary password are required.");
+      throw new Error("Both university email and temporary password are required.");
     }
 
     const cleanEmail = email.trim().toLowerCase();
     const cleanPass = candidatePassword.trim().toUpperCase();
+    const authorizedEmail = getAuthorizedInstructorEmail();
     const now = Date.now();
 
-    // 1. Verify instructor exists and is active
-    const instructor = (data.instructors || DEFAULT_INSTRUCTORS).find(
-      i => i.email.toLowerCase() === cleanEmail
-    );
-    if (!instructor) {
-      throw new Error("UNAUTHORIZED FACULTY: Account not found in faculty records.");
-    }
-    if (!instructor.isActive) {
-      throw new Error("ACCOUNT INACTIVE: Faculty account is deactivated.");
+    // 1. Validate Single Authorized Instructor (generic error)
+    if (cleanEmail !== authorizedEmail) {
+      throw new Error("Access denied. This email is not authorized.");
     }
 
     // 2. Check Lockout Status (5 failed attempts = 15 minutes lockout)
@@ -2006,7 +1908,7 @@ If you did not request this login, please ignore this email.
       const lockUntilMs = new Date(emailFail.lockedUntil).getTime();
       if (now < lockUntilMs) {
         const remainingMin = Math.ceil((lockUntilMs - now) / 60000);
-        throw new Error(`ACCOUNT LOCKED: Account is temporarily locked due to 5 consecutive failed attempts. Try again in ${remainingMin} minute(s).`);
+        throw new Error(`Account locked due to 5 consecutive failed attempts. Try again in ${remainingMin} minute(s).`);
       } else {
         // Lockout expired
         emailFail.count = 0;
@@ -2026,14 +1928,14 @@ If you did not request this login, please ignore this email.
         emailFail.lockedUntil = new Date(now + 15 * 60 * 1000).toISOString();
         this.logAuthEvent('INSTRUCTOR_ACCOUNT_LOCKED', {
           email: cleanEmail,
-          instructorName: instructor.name,
+          instructorName: "Dr. Naveed Khan",
           details: `Account locked for 15 minutes after 5 consecutive failed login attempts.`,
           severity: 'CRITICAL'
         });
       } else {
         this.logAuthEvent('INSTRUCTOR_LOGIN_FAILED', {
           email: cleanEmail,
-          instructorName: instructor.name,
+          instructorName: "Dr. Naveed Khan",
           details: `No active temporary password found. Remaining attempts: ${remaining}.`,
           severity: 'WARNING'
         });
@@ -2041,7 +1943,7 @@ If you did not request this login, please ignore this email.
       failedRecords[cleanEmail] = emailFail;
       data.authRateLimits.failedAttempts = failedRecords;
       this.writeAll(data);
-      throw new Error(`NO ACTIVE TEMPORARY PASSWORD: No valid temporary password found. Please request a new code. Remaining attempts: ${remaining}`);
+      throw new Error(`No active temporary password found. Please request a new code. Remaining attempts: ${remaining}`);
     }
 
     const latestPass = activePassRecords[0];
@@ -2052,12 +1954,12 @@ If you did not request this login, please ignore this email.
       latestPass.invalidatedReason = 'EXPIRED';
       this.logAuthEvent('INSTRUCTOR_LOGIN_FAILED', {
         email: cleanEmail,
-        instructorName: instructor.name,
+        instructorName: "Dr. Naveed Khan",
         details: 'Attempted to use expired temporary password.',
         severity: 'WARNING'
       });
       this.writeAll(data);
-      throw new Error("TEMPORARY PASSWORD EXPIRED: This code has expired (10-minute limit exceeded). Please request a new code.");
+      throw new Error("Temporary password has expired (10-minute limit exceeded). Please request a new code.");
     }
 
     // 5. Verify cryptographic hash
@@ -2076,23 +1978,23 @@ If you did not request this login, please ignore this email.
         data.authRateLimits.failedAttempts = failedRecords;
         this.logAuthEvent('INSTRUCTOR_ACCOUNT_LOCKED', {
           email: cleanEmail,
-          instructorName: instructor.name,
+          instructorName: "Dr. Naveed Khan",
           details: `Account locked for 15 minutes after 5 failed password attempts.`,
           severity: 'CRITICAL'
         });
         this.writeAll(data);
-        throw new Error("ACCOUNT LOCKED: 5 consecutive failed attempts. Your account has been locked for 15 minutes.");
+        throw new Error("Account locked due to 5 consecutive failed attempts. Your account has been locked for 15 minutes.");
       } else {
         failedRecords[cleanEmail] = emailFail;
         data.authRateLimits.failedAttempts = failedRecords;
         this.logAuthEvent('INSTRUCTOR_LOGIN_FAILED', {
           email: cleanEmail,
-          instructorName: instructor.name,
+          instructorName: "Dr. Naveed Khan",
           details: `Invalid temporary password entered. ${remaining} attempt(s) remaining.`,
           severity: 'WARNING'
         });
         this.writeAll(data);
-        throw new Error(`INVALID TEMPORARY PASSWORD: The code entered is incorrect. ${remaining} attempt(s) remaining before account lockout.`);
+        throw new Error(`Invalid temporary password. ${remaining} attempt(s) remaining before account lockout.`);
       }
     }
 
@@ -2108,11 +2010,11 @@ If you did not request this login, please ignore this email.
     const sessionToken = `inst_sess_${crypto.randomBytes(32).toString('hex')}`;
     const session = {
       token: sessionToken,
-      instructorId: instructor.id,
-      email: instructor.email,
-      name: instructor.name,
-      role: instructor.role,
-      department: instructor.department,
+      instructorId: "inst-001",
+      email: cleanEmail,
+      name: "Dr. Naveed Khan",
+      role: "Lead Java Examiner",
+      department: "Department of Computer Science & Software Engineering",
       createdAt: new Date(now).toISOString(),
       expiresAt: new Date(now + 8 * 3600 * 1000).toISOString(),
       ipAddress: clientIp
@@ -2122,8 +2024,8 @@ If you did not request this login, please ignore this email.
 
     this.logAuthEvent('INSTRUCTOR_LOGIN_SUCCESS', {
       email: cleanEmail,
-      instructorName: instructor.name,
-      details: `Successful authenticated login for ${instructor.name} (${instructor.role}). Session established.`,
+      instructorName: "Dr. Naveed Khan",
+      details: `Successful authenticated login for Dr. Naveed Khan. Session established.`,
       severity: 'INFO'
     });
 
@@ -2133,11 +2035,11 @@ If you did not request this login, please ignore this email.
       success: true,
       token: sessionToken,
       instructor: {
-        id: instructor.id,
-        name: instructor.name,
-        email: instructor.email,
-        role: instructor.role,
-        department: instructor.department
+        id: "inst-001",
+        name: "Dr. Naveed Khan",
+        email: cleanEmail,
+        role: "Lead Java Examiner",
+        department: "Department of Computer Science & Software Engineering"
       }
     };
   }

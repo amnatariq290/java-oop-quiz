@@ -433,26 +433,29 @@ export async function handleApiRequest(req, res) {
       });
     }
 
-    // 8. FACULTY PUBLIC INFO (Domain & Registered Examiners)
+    // 8. FACULTY PUBLIC INFO (Domain Only)
     if (pathname === '/api/admin/faculty-info' && req.method === 'GET') {
       return sendJson(res, 200, {
-        domain: db.getUniversityDomain(),
-        authorizedInstructors: db.getAuthorizedInstructors()
+        domain: db.getUniversityDomain()
       });
     }
 
     // 9. STEP 1: REQUEST TEMPORARY PASSWORD
     if (pathname === '/api/admin/request-password' && req.method === 'POST') {
       const body = await parseBody(req);
-      const { name, email } = body;
+      const { email, name } = body;
+      const targetEmail = email || name;
       const clientIp = req.socket?.remoteAddress || '127.0.0.1';
 
       try {
-        const result = db.createTemporaryPassword(name, email, clientIp);
+        const result = await db.createTemporaryPassword(targetEmail, targetEmail, clientIp);
         return sendJson(res, 200, result);
       } catch (err) {
-        return sendJson(res, 400, {
-          error: "REQUEST_FAILED",
+        const isForbidden = err.message.includes('Access denied');
+        const isRateLimit = err.message.includes('cooldown') || err.message.includes('Too many');
+        const status = isRateLimit ? 429 : isForbidden ? 403 : 400;
+        return sendJson(res, status, {
+          error: isForbidden ? "ACCESS_DENIED" : isRateLimit ? "RATE_LIMITED" : "REQUEST_FAILED",
           message: err.message
         });
       }
